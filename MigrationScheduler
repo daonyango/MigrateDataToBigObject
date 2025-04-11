@@ -1,0 +1,20 @@
+// Scheduler class to schedule the migration job
+global class MigrationScheduler implements Schedulable {
+    private Boolean deleteSourceRecords;
+    
+    global MigrationScheduler(Boolean deleteSource) {
+        this.deleteSourceRecords = deleteSource;
+    }
+    
+    global void execute(SchedulableContext sc) {
+        // Start the batch job with specified batch size
+        MigrateAnswersToBigObject batchJob = new MigrateAnswersToBigObject(deleteSourceRecords);
+        Database.executeBatch(batchJob, 200); // Process 200 records at a time
+    }
+    
+    // Helper method to schedule the job
+    global static String scheduleJob(String jobName, String cronExpression, Boolean deleteSourceRecords) {
+        MigrationScheduler scheduler = new MigrationScheduler(deleteSourceRecords);
+        return System.schedule(jobName, cronExpression, scheduler);
+    }
+}
