@@ -1,0 +1,120 @@
+global class MigrateAnswersToBigObject implements Database.Batchable<sObject>, Database.Stateful {
+    
+    global Integer totalProcessed = 0;
+    global Integer successCount = 0;
+    global Integer errorCount = 0;
+    global List<String> errorMessages = new List<String>();
+    global DateTime cutoffDate = System.now().addYears(-2);
+    
+    global Database.QueryLocator start(Database.BatchableContext bc) {
+        return Database.getQueryLocator([
+            SELECT Id, Name, gfsurveys__AnswerKeyMD5__c, CreatedDate,
+                   gfsurveys__DateTimeValue__c, gfsurveys__DateValue__c,
+                   gfsurveys__Instance__c, gfsurveys__NumericValue__c,
+                   gfsurveys__Option__c, gfsurveys__Parent__c, gfsurveys__Question__c,
+                   gfsurveys__Submission__c, gfsurveys__TextAreaValue__c,
+                   gfsurveys__TextValue__c, gfsurveys__Value__c,
+                   CurrencyIsoCode
+            FROM gfsurveys__Answer__c
+            WHERE CreatedDate < :cutoffDate
+        ]);
+    }
+    
+    global void execute(Database.BatchableContext bc, List<gfsurveys__Answer__c> scope) {
+        System.debug('Processing batch of ' + scope.size() + ' records');
+        List<GF_Answers_Archive__b> archives = new List<GF_Answers_Archive__b>();
+        totalProcessed += scope.size();
+        
+        for(gfsurveys__Answer__c answer : scope) {
+            try {
+                GF_Answers_Archive__b archive = new GF_Answers_Archive__b();
+                
+                // Read Name field (not trying to modify it)
+                archive.Name__c = answer.Name;
+                archive.gfsurveys_AnswerKeyMD5__c = answer.gfsurveys__AnswerKeyMD5__c;
+                archive.Created_Date__c = answer.CreatedDate;
+                archive.CurrencyIsoCode__c = answer.CurrencyIsoCode;
+                archive.gfsurveys_DateTimeValue__c = answer.gfsurveys__DateTimeValue__c;
+                archive.gfsurveys_DateValue__c = answer.gfsurveys__DateValue__c;
+                archive.gfsurveys_Instance__c = answer.gfsurveys__Instance__c;
+                archive.gfsurveys_NumericValue__c = answer.gfsurveys__NumericValue__c;
+                archive.gfsurveys_Option__c = answer.gfsurveys__Option__c;
+                archive.gfsurveys_Parent__c = answer.gfsurveys__Parent__c;
+                archive.gfsurveys_Question__c = answer.gfsurveys__Question__c;
+                archive.gfsurveys_Submission__c = answer.gfsurveys__Submission__c;
+                archive.gfsurveys_TextAreaValue__c = answer.gfsurveys__TextAreaValue__c;
+                archive.gfsurveys_TextValue__c = answer.gfsurveys__TextValue__c;
+                archive.gfsurveys_Value__c = answer.gfsurveys__Value__c;
+                
+                // Add the ID as a unique identifier
+                archive.ID__c = answer.Id;
+                
+                archives.add(archive);
+            } catch(Exception e) {
+                errorCount++;
+                String errorMsg = 'Error processing record ' + answer.Id + ': ' + e.getMessage();
+                errorMessages.add(errorMsg);
+                System.debug(LoggingLevel.ERROR, errorMsg);
+            }
+        }
+        
+        if(!archives.isEmpty()) {
+            System.debug('Attempting to insert ' + archives.size() + ' big object records');
+            try {
+                // Using insertImmediate which is correct for Big Objects
+                Database.SaveResult[] results = Database.insertImmediate(archives);
+                for(Integer i = 0; i < results.size(); i++) {
+                    Database.SaveResult sr = results[i];
+                    if(sr.isSuccess()) {
+                        successCount++;
+                    } else {
+                        errorCount++;
+                        for(Database.Error err : sr.getErrors()) {
+                            String errorMsg = 'Migration failed for record index ' + i + ': ' + err.getMessage();
+                            errorMessages.add(errorMsg);
+                            System.debug(LoggingLevel.ERROR, errorMsg);
+                        }
+                    }
+                }
+            } catch(Exception e) {
+                errorCount += archives.size();
+                String errorMsg = 'Bulk insert exception: ' + e.getMessage();
+                errorMessages.add(errorMsg);
+                System.debug(LoggingLevel.ERROR, errorMsg);
+            }
+        }
+        System.debug('Batch complete. Success: ' + successCount + ' Errors: ' + errorCount);
+    }
+    
+    global void finish(Database.BatchableContext bc) {
+        String emailBody = 'Migration Results:\n' +
+                         'Total Processed: ' + totalProcessed + '\n' +
+                         'Success Count: ' + successCount + '\n' +
+                         'Error Count: ' + errorCount + '\n\n';
+        
+        if(!errorMessages.isEmpty()) {
+            // Fix for List.subList error - using custom method to limit list size
+            List<String> limitedErrors = limitList(errorMessages, 50);
+            String errors = String.join(limitedErrors, '\n');
+            emailBody += 'Errors (showing up to 50):\n' + errors;
+            if(errorMessages.size() > 50) {
+                emailBody += '\n\n...and ' + (errorMessages.size() - 50) + ' more errors.';
+            }
+        }
+        
+        Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+        mail.setToAddresses(new String[] {'dorcus.onyango@boma.ngo'});
+        mail.setSubject('Migration Complete - ' + System.today().format());
+        mail.setPlainTextBody(emailBody);
+        Messaging.sendEmail(new Messaging.SingleEmailMessage[] { mail });
+    }
+    
+    // Helper method to limit list size instead of using subList
+    private List<String> limitList(List<String> originalList, Integer maxSize) {
+        List<String> limitedList = new List<String>();
+        for(Integer i = 0; i < Math.min(originalList.size(), maxSize); i++) {
+            limitedList.add(originalList[i]);
+        }
+        return limitedList;
+    }
+}
